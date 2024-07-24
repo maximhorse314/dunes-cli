@@ -1356,6 +1356,68 @@ walletCommand
     await walletSplit(splits);
   });
 
+program
+  .command("splitDune")
+  .description("Split Dune allocations from one UTXO into multiple UTXOs")
+  .argument("<txhash>", "Hash from tx")
+  .argument("<vout>", "Output from tx")
+  .argument("<dune>", "Dune to split")
+  .argument("<numUtxos>", "Number of UTXOs to split into")
+  .action(async (txhash, vout, dune, numUtxos) => {
+    if (numUtxos < 1 || numUtxos > 12) {
+      console.error("The number of UTXOs to split into must be between 1 and 12.");
+      process.exit(1);
+    }
+
+    let wallet = JSON.parse(fs.readFileSync(WALLET_PATH));
+
+    const dune_utxo = wallet.utxos.find(
+      (utxo) => utxo.txid == txhash && utxo.vout == vout
+    );
+    if (!dune_utxo) {
+      console.error(`UTXO ${txhash}:${vout} not found`);
+      throw new Error(`UTXO ${txhash}:${vout} not found`);
+    }
+
+    const dunes = await getDunesForUtxo(`${dune_utxo.txid}:${dune_utxo.vout}`);
+    if (dunes.length == 0) throw new Error("No dunes");
+
+    // Check if the dune is in the utxo and if we have enough amount
+    const duneOnUtxo = dunes.find((d) => d.dune == dune);
+    if (!duneOnUtxo) throw new Error("Dune not found on specified UTXO");
+
+    // Extract the numeric part from duneOnUtxo.amount as a BigInt
+    let duneOnUtxoAmount = BigInt(duneOnUtxo.amount.match(/\d+/)[0]);
+
+    // Calculate split amounts
+    const splitAmount = duneOnUtxoAmount / BigInt(numUtxos);
+    const remainder = duneOnUtxoAmount % BigInt(numUtxos);
+
+    let tx = new Transaction();
+    tx.from(dune_utxo);
+
+    // Create outputs for the split UTXOs
+    for (let i = 0; i < numUtxos; i++) {
+      const amount = splitAmount + (i === 0 ? remainder : BigInt(0));
+      const edicts = [new Edict(parseDuneId(dune), amount, i + 2)]; // Output index starts from 2
+      const script = constructScript(null, null, null, edicts);
+
+      tx.addOutput(new dogecore.Transaction.Output({ script: script, satoshis: 0 }));
+      tx.to(wallet.address, 100_000); // Sending 100,000 satoshis to each new UTXO
+    }
+
+    await fund(wallet, tx);
+
+    if (tx.inputAmount < tx.outputAmount + tx.getFee()) {
+      throw new Error("Not enough funds");
+    }
+
+    console.log(tx.toObject());
+    await broadcast(tx, true);
+
+    console.log(tx.hash);
+  });
+
 async function main() {
   program.parse();
 }
